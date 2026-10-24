@@ -17,13 +17,20 @@ async function send(text){
  if(preferences.mock)return sendLocal(text);
  text=text.trim();if(!text)return;
  $('#sendBtn').disabled=true;
+ $('#composerHint').textContent='MIKEE is working on your request…';
+ aiState='MIKEE IS GENERATING…';
  try{
   if(!project){project=C.makeProject(text.slice(0,60));project.website.rawHtml='<!doctype html><html><body><p>Your generated website will appear here.</p></body></html>';await C.saveProject(project);await C.setPref('lastProjectId',project.id)}
   const history=(project.messages||[]).filter(m=>['user','assistant'].includes(m.role)&&m.engine!=='ERROR').slice(-8).map(m=>({role:m.role,content:m.aiContent||m.text}));
   const currentHtml=C.renderSite(project);if(currentHtml.length>24000)throw Error('This website exceeds the current AI editing limit (24,000 characters). Export a backup; manual tools remain available.');
   project.messages.push(msg('user',text));await C.saveProject(project);await showAll();
-  const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,history,currentHtml}),signal:AbortSignal.timeout(90000)});
-  const data=await response.json();if(!response.ok)throw Error(data.error||'AI request failed');
+  const working=document.createElement('article');working.className='message assistant';working.id='aiWorking';
+  working.innerHTML='<div class="by">MIKEE · WORKERS AI</div><div class="body">Generating your response… Full websites take more processing than short answers.</div>';
+  ui.chat.appendChild(working);ui.chat.scrollTop=ui.chat.scrollHeight;
+  const controller=new AbortController(),deadline=setTimeout(()=>controller.abort(),90000);
+  let response;try{response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,history,currentHtml}),signal:controller.signal})}finally{clearTimeout(deadline)}
+  let data;try{data=await response.json()}catch{throw Error('The server returned an unreadable response. Please try a smaller website request.')}
+  if(!response.ok)throw Error(data.error||'AI request failed');
   if(data.live!==true||typeof data.reply!=='string')throw Error('No verified provider response was received.');
   aiState='AI RESPONSE VERIFIED';
   const match=data.reply.match(/<!doctype html[\s\S]*?<\/html>/i)||data.reply.match(/<html[\s\S]*?<\/html>/i);
@@ -32,7 +39,7 @@ async function send(text){
   else if(/<!doctype html|<html/i.test(data.reply)){answer='The AI returned incomplete HTML. Your previous website is unchanged. Ask for a shorter complete website.';}
   const m=msg('assistant',answer,'WORKERS AI');m.aiContent=data.reply;project.messages.push(m);project.messages=project.messages.slice(-100);
   $('#prompt').value='';await C.saveProject(project);await refreshList();await showAll();if(match&&innerWidth<=800)switchMobile('preview');
- }catch(e){aiState='AI REQUEST FAILED';if(project){project.messages.push(msg('assistant',e.message,'ERROR'));await C.saveProject(project);await showAll()}else fail(e)}finally{$('#sendBtn').disabled=false}
+ }catch(e){aiState='AI REQUEST FAILED';const error=e?.name==='AbortError'?'The website request timed out. Your earlier site is unchanged. Try requesting a smaller page first, then add sections in follow-up messages.':e.message;if(project){project.messages.push(msg('assistant',error,'ERROR'));await C.saveProject(project);await showAll()}else fail(e)}finally{$('#sendBtn').disabled=false;$('#composerHint').textContent='Changes stay on this device'}
 }
 async function sendLocal(text){text=text.trim();if(!text)return;$('#sendBtn').disabled=true;try{const [tool,args]=C.actionFromPrompt(text,project);if(tool==='create_website'){const result=C.callTool(tool,null,args);result.messages=[msg('user',text)];await C.saveProject(result);project=result;await C.setPref('lastProjectId',project.id);project.messages.push(msg('assistant',`Website created locally: “${project.name}” (${project.website.pages.length} pages). Open Preview or Edit. This is a rule-based layout, not a live AI-generated website.`,preferences.mock?'MOCK — NOT LIVE AI':'RULE-BASED / NOT LIVE AI'));await C.saveProject(project);await refreshList()}
  else {project.messages=[...(project.messages||[]),msg('user',text)].slice(-100);const result=C.callTool(tool,project,args);if(result.export){await C.exportHTML(project);project.messages.push(msg('assistant','Exported the current website as an offline HTML file.','LOCAL TOOL'))}else if(result.details){project.messages.push(msg('assistant',`Current site: ${result.details.pages} page(s), ${result.details.photos} photo(s), ${result.details.versions} saved undo versions.`, 'LOCAL TOOL'))}else if(result.changed){project=result.project;project.messages.push(msg('assistant',`Updated “${project.name}”. This is version ${project.version}. Preview, refresh or Undo to check the actual change.`,preferences.mock?'MOCK — NOT LIVE AI':'RULE-BASED / NOT LIVE AI'))}else project.messages.push(msg('assistant','No change was necessary.','LOCAL TOOL'));project.messages=project.messages.slice(-100);await C.saveProject(project)}
